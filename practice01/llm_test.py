@@ -4,12 +4,12 @@ import json
 import http.client
 from urllib.parse import urlparse
 
-# 读取.env文件
+# 读取 .env 文件
 def load_env():
-    """从项目根目录的.env文件加载环境变量"""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+    """从项目根目录的 .env 文件加载环境变量"""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     if not os.path.exists(env_path):
-        print(f"错误: .env文件不存在，请从env.example复制并填写正确参数")
+        print(f"错误: .env 文件不存在，请创建并配置")
         return None
     
     env_vars = {}
@@ -19,97 +19,90 @@ def load_env():
             if line and not line.startswith('#'):
                 key, value = line.split('=', 1)
                 env_vars[key.strip()] = value.strip()
-    
     return env_vars
 
-# 调用LLM API
-def call_llm(env_vars, prompt):
-    """使用标准HTTP库调用LLM API"""
+# 流式调用 LM Studio
+def call_llm_stream(env_vars, prompt):
     start_time = time.time()
-    
-    # 解析URL
     url = urlparse(env_vars['BASE_URL'])
     host = url.netloc
-    path = f"{url.path.rstrip('/')}/api/v1/chat"
-    
-    # 准备请求数据
+    path = "/v1/chat/completions"
+
+    # 流式输出核心：stream=True
     data = {
-        "model": env_vars['MODEL'],
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": float(env_vars.get('TEMPERATURE', '0.7')),
-        "max_tokens": int(env_vars.get('MAX_TOKENS', '1000')),
-        "stream": False
+        "model": env_vars["MODEL"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": float(env_vars.get("TEMPERATURE", 0.7)),
+        "max_tokens": int(env_vars.get("MAX_TOKENS", 4000)),
+        "stream": True
     }
-    
-    # 准备请求头
+
     headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f"Bearer {env_vars['API_KEY']}"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {env_vars.get('API_KEY', '')}"
     }
-    
-    # 发送请求
-    conn = http.client.HTTPSConnection(host, timeout=int(env_vars.get('TIMEOUT', '30')))
+
+    # 使用 HTTP + 超长超时
+    conn = http.client.HTTPConnection(host, timeout=120)
+    full_content = ""
+
     try:
-        conn.request('POST', path, json.dumps(data), headers)
+        conn.request("POST", path, json.dumps(data), headers)
         response = conn.getresponse()
-        response_data = response.read().decode('utf-8')
-        response_json = json.loads(response_data)
+
+        print("AI 正在思考并回复：", end="", flush=True)
+
+        # 逐字流式输出
+        for line in response.fp:
+            line = line.decode("utf-8").strip()
+            if not line:
+                continue
+            if line.startswith("data: "):
+                data_part = line[6:]
+                if data_part == "[DONE]":
+                    break
+                try:
+                    json_data = json.loads(data_part)
+                    token = json_data["choices"][0]["delta"].get("content", "")
+                    if token:
+                        print(token, end="", flush=True)
+                        full_content += token
+                except:
+                    continue
+
+        print("\n")
+    except Exception as e:
+        print(f"连接失败：{str(e)}")
+        return None, 0, 0, 0
     finally:
         conn.close()
-    
-    end_time = time.time()
-    duration = end_time - start_time
-    
-    # 解析响应
-    if 'error' in response_json:
-        print(f"API错误: {response_json['error']['message']}")
-        return None, 0, 0, 0
-    
-    # 提取token使用情况（LM Studio格式）
-    usage = response_json.get('usage', {})
-    if not usage:
-        # LM Studio可能使用不同的字段名
-        usage = response_json.get('stats', {})
-    prompt_tokens = usage.get('prompt_tokens', 0)
-    completion_tokens = usage.get('completion_tokens', 0)
-    total_tokens = usage.get('total_tokens', prompt_tokens + completion_tokens)
-    
-    # 计算token速度
+
+    duration = time.time() - start_time
+    total_tokens = len(full_content) // 3
     token_speed = total_tokens / duration if duration > 0 else 0
-    
-    # 提取回复内容（LM Studio格式）
-    content = response_json.get('choices', [{}])[0].get('message', {}).get('content', '')
-    
-    return content, total_tokens, duration, token_speed
+    return full_content, total_tokens, duration, token_speed
 
 def main():
-    """主函数"""
-    # 加载环境变量
     env_vars = load_env()
     if not env_vars:
         return
-    
-    # 测试提示词
-    prompt = "请解释什么是人工智能，并给出一个简单的例子"
-    
-    print("正在调用LLM API...")
-    print(f"使用模型: {env_vars['MODEL']}")
-    print(f"API地址: {env_vars['BASE_URL']}")
+
+    prompt = input("请输入你的问题：")
+
     print("=" * 60)
-    
-    # 调用LLM
-    content, total_tokens, duration, token_speed = call_llm(env_vars, prompt)
-    
+    print("✅ 已连接本地大模型")
+    print(f"模型：{env_vars['MODEL']}")
+    print(f"地址：{env_vars['BASE_URL']}")
+    print("=" * 60)
+
+    content, total_tokens, duration, token_speed = call_llm_stream(env_vars, prompt)
+
     if content:
-        print("回复内容:")
-        print(content)
         print("=" * 60)
-        print(f"统计信息:")
-        print(f"总消耗tokens: {total_tokens}")
-        print(f"响应时间: {duration:.2f} 秒")
-        print(f"Token速度: {token_speed:.2f} tokens/秒")
+        print(f"✅ 回复完成！")
+        print(f"耗时：{duration:.2f}s")
+        print(f"总Tokens：{total_tokens}")
+        print(f"速度：{token_speed:.2f} tokens/s")
 
 if __name__ == "__main__":
     main()
