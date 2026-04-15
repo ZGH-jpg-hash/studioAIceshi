@@ -33,7 +33,7 @@ def call_llm_stream(env_vars, prompt):
         "model": env_vars["MODEL"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": float(env_vars.get("TEMPERATURE", 0.7)),
-        "max_tokens": int(env_vars.get("MAX_TOKENS", 4000)),
+        "max_tokens": int(env_vars.get("MAX_TOKENS", 10000)),
         "stream": True
     }
 

@@ -71,6 +71,8 @@ python practice01/llm_test.py
 studioAIceshi/
 ├── practice01/         # 实践练习模块
 │   └── llm_test.py    # LLM流式调用示例
+├── practice02/         # 工具调用功能模块
+│   └── tool_chat_client.py  # 工具调用客户端
 ├── venv/              # 虚拟环境
 ├── requirements.txt   # 项目依赖
 ├── env.example       # 环境变量配置模板
@@ -88,6 +90,26 @@ studioAIceshi/
 - **流式输出**：实时显示AI回复内容
 - **性能统计**：计算tokens数量、响应时间和生成速度
 - **错误处理**：完善的异常捕获和错误提示
+
+### 工具调用功能
+
+`practice02/tool_chat_client.py` 实现了工具调用功能：
+
+- **文件操作工具**：
+  - `list_files(directory)`：列出目录下的文件及其属性
+  - `rename_file(directory, old_name, new_name)`：修改文件名字
+  - `delete_file(directory, file_name)`：删除文件
+  - `create_file(directory, file_name, content)`：新建文件并写入内容
+  - `read_file(directory, file_name)`：读取文件内容
+
+- **网络访问工具**：
+  - `curl_request(url)`：通过 curl 访问网页并返回内容
+
+- **工具调用流程**：
+  1. 用户输入请求
+  2. LLM 分析请求并生成工具调用指令
+  3. 系统执行工具调用
+  4. LLM 根据工具执行结果生成最终回复
 
 ### 技术特性
 
