@@ -66,6 +66,12 @@ python practice02/tool_chat_client.py
 
 # 运行增强版本工具助手（含关键信息提取、历史查找）
 python practice02/tool_chat_client_v2.py
+
+# 运行完整版本工具助手
+python practice03/tool_chat_client.py
+
+# 运行集成AnythingLLM的工具助手
+python practice04/tool_chat_client.py
 ```
 
 ## 项目结构
@@ -76,6 +82,11 @@ studioAIceshi/
 ├── practice02/         # 工具调用功能模块
 │   ├── tool_chat_client.py   # 基础版本工具助手（含聊天记录压缩）
 │   └── tool_chat_client_v2.py # 增强版本工具助手（含关键信息提取、历史查找）
+├── practice03/         # 完整工具调用聊天客户端
+│   ├── tool_chat_client.py   # 完整版本工具助手
+│   └── tool_chat_client_v2.py # 增强版本工具助手
+├── practice04/         # 集成AnythingLLM的工具调用聊天客户端
+│   ├── tool_chat_client.py   # 集成AnythingLLM的工具助手
 ├── venv/              # 虚拟环境
 ├── requirements.txt   # 项目依赖
 ├── env.example        # 环境变量配置模板（可重命名为.env）
@@ -138,6 +149,25 @@ studioAIceshi/
 #### 功能4：工具调用后台执行
 - 工具调用在后台执行，不显示工具调用信息
 - 只显示与用户问题相关的AI回复，提供更专注的对话体验
+
+### 4. AnythingLLM集成
+`practice04/tool_chat_client.py` 实现了与AnythingLLM的集成：
+
+#### 功能特性
+- **AnythingLLM查询工具**：`anythingllm_query(message)` 通过curl命令访问AnythingLLM的聊天API接口
+- **智能触发机制**：当用户提到"文档仓库"、"文件仓库"、"仓库"时，自动触发AnythingLLM查询
+- **API认证**：使用API密钥进行身份验证
+- **错误处理**：完善的异常捕获和错误提示
+
+#### 配置方法
+1. 开启AnythingLLM本地服务
+2. 在AnythingLLM中创建API KEY
+3. 在practice04目录的.env文件中填写ANYTHINGLLM_API_KEY
+4. 确保.env文件中包含以下配置：
+   ```env
+   # AnythingLLM配置
+   ANYTHINGLLM_API_KEY=your-anythingllm-api-key
+   ```
 
 ## 依赖说明
 - **numpy/pandas**：数据处理基础库
