@@ -103,42 +103,97 @@ def curl_request(url):
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
+# ====================== 【最终curl版】anythingllm_query 函数 ======================
 def anythingllm_query(message):
     try:
+        print(f"\n=== [AnythingLLM 工具调用开始] ===")
         env_vars = load_env()
         api_key = env_vars.get('ANYTHINGLLM_API_KEY', '')
-        if not api_key:
-            return json.dumps({"success": False, "error": "AnythingLLM API key is not set"}, ensure_ascii=False)
+        workspace_slug = env_vars.get('ANYTHINGLLM_WORKSPACE', 'default')
         
-        url = "http://localhost:3001/api/v1/workspace/AI/chat"
+        if not api_key:
+            print("❌ API Key未设置")
+            return json.dumps({"success": False, "result": "错误：未配置AnythingLLM API密钥"}, ensure_ascii=False)
+        
+        # 用127.0.0.1代替localhost，避免Windows解析延迟
+        url = f"http://127.0.0.1:3001/api/v1/workspace/{workspace_slug}/chat"
+        print(f"请求URL：{url}")
+        print(f"查询内容：{message}")
+        
         headers = [
             "Content-Type: application/json",
             f"Authorization: Bearer {api_key}"
         ]
-        data = json.dumps({"message": message})
+        post_data = {
+            "message": message,
+            "mode": "chat",
+            "sessionId": None,
+            "stream": False,
+            "includeSources": False
+        }
+        data = json.dumps(post_data, ensure_ascii=False)
+        print(f"请求数据：{data}")
         
-        result = subprocess.run([
-            'curl', '-s', '-X', 'POST',
-            '-H', headers[0],
-            '-H', headers[1],
-            '-d', data,
-            url
-        ], capture_output=True, timeout=60)
+        print("执行curl命令...")
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as f:
+            f.write(data)
+            temp_json_path = f.name
+        
+        try:
+            # 🔴 核心修改：延长超时到120秒，增加连接超时10秒
+            result = subprocess.run([
+                'curl', '-s', '-X', 'POST',
+                '--connect-timeout', '10',  # 连接超时10秒
+                '--max-time', '120',        # 总超时120秒
+                '-H', headers[0],
+                '-H', headers[1],
+                '-d', f'@{temp_json_path}',
+                url
+            ], capture_output=True, timeout=125)  # Python侧超时比curl多5秒
+            print(f"curl命令执行完成，返回码：{result.returncode}")
+        finally:
+            try:
+                os.unlink(temp_json_path)
+            except:
+                pass
         
         if result.returncode == 0:
             try:
                 content = result.stdout.decode('utf-8')
+                print(f"curl命令返回内容：{content}")
             except UnicodeDecodeError:
                 content = result.stdout.decode('gbk', errors='replace')
-            return json.dumps({"success": True, "content": content}, ensure_ascii=False)
+                print(f"curl命令返回内容（gbk）：{content}")
+            
+            try:
+                resp_json = json.loads(content)
+                if "textResponse" in resp_json and resp_json["textResponse"]:
+                    result_text = resp_json["textResponse"]
+                    print(f"✅ 提取到回答：{result_text}")
+                    return json.dumps({"success": True, "result": result_text}, ensure_ascii=False)
+                elif "error" in resp_json:
+                    error = resp_json["error"]
+                    print(f"❌ 接口报错：{error}")
+                    return json.dumps({"success": False, "result": f"文档仓库查询失败：{error}"}, ensure_ascii=False)
+            except:
+                pass
+
+            return json.dumps({"success": True, "result": content}, ensure_ascii=False)
         else:
             try:
                 error = result.stderr.decode('utf-8')
             except UnicodeDecodeError:
                 error = result.stderr.decode('gbk', errors='replace')
-            return json.dumps({"success": False, "error": error}, ensure_ascii=False)
+            print(f"curl命令错误信息：{error}")
+            return json.dumps({"success": False, "result": f"请求失败：{error}"}, ensure_ascii=False)
+            
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        error_msg = str(e)
+        print(f"❌ 工具异常：{error_msg}")
+        return json.dumps({"success": False, "result": f"工具内部错误：{error_msg}"}, ensure_ascii=False)
+    finally:
+        print("=== [AnythingLLM 工具调用结束] ===\n")
 
 # ====================== 工具定义 ======================
 TOOLS = [
@@ -146,13 +201,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "列出指定目录下的所有文件和文件夹",
+            "description": "列出本地电脑指定目录下的所有文件和文件夹，仅当用户明确提到本地文件、电脑文件夹、磁盘路径时使用",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "要列出的目录路径，例如 D:\\test"
+                        "description": "要列出的本地目录路径，例如 D:\\test"
                     }
                 },
                 "required": ["directory"]
@@ -163,17 +218,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_file",
-            "description": "在指定目录下创建一个新文件并写入内容",
+            "description": "在本地电脑指定目录下创建一个新文件并写入内容，仅用于本地文件操作",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "文件所在的目录路径"
+                        "description": "本地文件所在的目录路径"
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "要创建的文件名，例如 test.txt"
+                        "description": "要创建的本地文件名，例如 test.txt"
                     },
                     "content": {
                         "type": "string",
@@ -189,17 +244,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "delete_file",
-            "description": "删除指定目录下的指定文件",
+            "description": "删除本地电脑指定目录下的指定文件，仅用于本地文件操作",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "文件所在的目录路径"
+                        "description": "本地文件所在的目录路径"
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "要删除的文件名"
+                        "description": "要删除的本地文件名"
                     }
                 },
                 "required": ["directory", "file_name"]
@@ -210,21 +265,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "rename_file",
-            "description": "重命名指定目录下的文件",
+            "description": "重命名本地电脑指定目录下的文件，仅用于本地文件操作",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "文件所在的目录路径"
+                        "description": "本地文件所在的目录路径"
                     },
                     "old_name": {
                         "type": "string",
-                        "description": "原文件名"
+                        "description": "原本地文件名"
                     },
                     "new_name": {
                         "type": "string",
-                        "description": "新文件名"
+                        "description": "新本地文件名"
                     }
                 },
                 "required": ["directory", "old_name", "new_name"]
@@ -235,17 +290,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取指定目录下文件的内容",
+            "description": "读取本地电脑指定目录下文件的内容，仅用于本地文件操作",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "文件所在的目录路径"
+                        "description": "本地文件所在的目录路径"
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "要读取的文件名"
+                        "description": "要读取的本地文件名"
                     }
                 },
                 "required": ["directory", "file_name"]
@@ -256,7 +311,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "curl_request",
-            "description": "访问指定的网页URL并返回内容",
+            "description": "访问指定的网页URL并返回内容，用于网络请求",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -273,7 +328,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "anythingllm_query",
-            "description": "查询AnythingLLM文档仓库，当用户提到文档仓库、文件仓库、仓库时使用",
+            "description": "查询AnythingLLM云端文档仓库/文档空间/知识库/向量库，当用户提到文档仓库、文件仓库、仓库、文档空间、知识库、向量库、ai文档时必须使用，绝对不能用于查询本地文件",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -288,20 +343,28 @@ TOOLS = [
     }
 ]
 
-# ====================== 通义千问专属系统提示词 ======================
+# ====================== 【强制工具优先级】系统提示词 ======================
 def build_system_prompt(user_info):
-    return f"""【最高优先级规则，必须严格遵守】
+    return f"""【最高优先级规则，违反任何一条都视为错误】
 1.  绝对禁止提及"通义千问"、"阿里巴巴"、"我是AI助手"
 2.  必须100%记住：用户叫{user_info}
 3.  回答必须完全贴合用户问题，不能答非所问
-4.  不能在回复中提及任何工具相关内容
+4.  不能在回复中提及任何工具相关内容、接口、代码、日志底层信息
 5.  用户问"我是谁"时，必须回答"你是{user_info}"
-6.  保持回答简洁准确
-7.  当用户提到"文档仓库"、"文件仓库"、"仓库"时，使用anythingllm_query工具查询
+6.  用户问"你是谁"时，回答要友好自然，不要重复用户的问题
+7.  保持回答简洁准确
+
+【🔴 工具调用绝对规则，必须严格遵守，优先级高于一切】
+8.  只要用户问题中包含以下任何一个词：
+    文档仓库、文件仓库、仓库、文档空间、知识库、向量库、AnythingLLM、ai文档、ai空间
+    **必须且只能使用anythingllm_query工具查询，绝对禁止使用list_files/read_file/rename_file等任何本地文件工具**
+9.  只有当用户明确提到"本地文件"、"电脑文件夹"、"D盘"、"C盘"、"本地磁盘"等本地存储相关词汇时，才能使用list_files等本地文件工具
+10. 工具返回结果后，你直接把result字段的内容整理成通顺的中文回复用户即可；
+    若工具返回失败，直接把result字段的错误信息告诉用户，不要返回原始json代码。
 
 现在回答用户的问题："""
 
-# ====================== 流式调用（通义千问专属适配） ======================
+# ====================== 流式调用 ======================
 def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
     start_time = time.time()
     url = urlparse(env_vars['BASE_URL'])
@@ -341,7 +404,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
         response = conn.getresponse()
 
         if not is_tool_round:
-            print("🤖 AI 正在思考...", end="", flush=True)
+            print("AI 正在思考...", end="", flush=True)
 
         for line in response.fp:
             line = line.decode("utf-8").strip()
@@ -359,7 +422,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
                         if not tool_calls:
                             if not full_content or len(full_content) == len(token):
                                 print("\r" + " " * 20 + "\r", end="", flush=True)
-                                print("🤖 AI 回复：", end="", flush=True)
+                                print("AI 回复：", end="", flush=True)
                             print(token, end="", flush=True)
                     
                     if "tool_calls" in delta and delta["tool_calls"]:
@@ -448,11 +511,11 @@ def calculate_context_length(messages):
                 if "function" in tool_call:
                     if "name" in tool_call["function"]:
                         total_length += len(tool_call["function"]["name"])
-                    if "arguments" in tool_call["function"]:
+                    if "arguments" in tool_call["function"]["arguments"]:
                         total_length += len(tool_call["function"]["arguments"])
     return total_length
 
-# ====================== 按要求压缩：前70%压缩，后30%保留 ======================
+# ====================== 聊天历史压缩 ======================
 def compress_chat_history(env_vars, messages):
     print("\n📝 检测到聊天历史过长，开始压缩...")
     
@@ -460,11 +523,9 @@ def compress_chat_history(env_vars, messages):
     if total_messages < 3:
         return messages
     
-    # 计算分割点：前70%压缩，后30%保留
     compress_count = int(total_messages * 0.7)
     keep_count = total_messages - compress_count
     
-    # 确保至少保留1条消息
     if keep_count < 1:
         keep_count = 1
         compress_count = total_messages - keep_count
@@ -472,7 +533,6 @@ def compress_chat_history(env_vars, messages):
     messages_to_compress = messages[:compress_count]
     messages_to_keep = messages[compress_count:]
     
-    # 构建压缩请求
     compress_prompt = "请对以下聊天记录进行总结，保持关键信息完整，语言简洁：\n\n"
     for msg in messages_to_compress:
         if msg["role"] == "user":
@@ -487,14 +547,12 @@ def compress_chat_history(env_vars, messages):
         {"role": "user", "content": compress_prompt}
     ]
     
-    # 调用LLM进行压缩
     compressed_content = call_llm_non_stream(env_vars, compress_messages)
     
     if not compressed_content:
         print("❌ 压缩失败，保留原聊天记录")
         return messages
     
-    # 构建新的消息列表：压缩摘要 + 保留的最新消息
     new_messages = [
         {"role": "assistant", "content": f"【聊天历史摘要】\n{compressed_content}"}
     ] + messages_to_keep
@@ -502,7 +560,7 @@ def compress_chat_history(env_vars, messages):
     print(f"✅ 聊天历史压缩完成（前{compress_count}条压缩，后{keep_count}条保留）")
     return new_messages
 
-# ====================== 自动提取用户身份 ======================
+# ====================== 用户身份提取 ======================
 def extract_user_info(messages):
     for msg in reversed(messages):
         if msg["role"] == "user":
@@ -513,7 +571,7 @@ def extract_user_info(messages):
                 return content.split("我叫", 1)[1].strip()
     return "杰克"
 
-# ====================== 保存聊天日志 ======================
+# ====================== 聊天日志保存 ======================
 def save_log(user_question, ai_answer, user_info):
     log_dir = r"D:\chat-log"
     if not os.path.exists(log_dir):
@@ -529,13 +587,13 @@ def save_log(user_question, ai_answer, user_info):
         f.write(f"用户：{user_question}\n")
         f.write(f"AI：{ai_answer}\n")
 
-# ====================== 主循环 ======================
+# ====================== 主循环（修复死循环+强制工具拦截） ======================
 def main():
     env_vars = load_env()
     if not env_vars: return
 
     print("=" * 50)
-    print("✅ AI专属工具助手已启动")
+    print("AI专属工具助手已启动")
     print(f"模型：{env_vars['MODEL']}")
     print(f"地址：{env_vars['BASE_URL']}")
     print("=" * 50)
@@ -551,19 +609,18 @@ def main():
         messages.append({"role": "user", "content": prompt})
         chat_rounds += 1
         
-        # 自动更新用户身份
         current_info = extract_user_info(messages)
         if current_info:
             user_info = current_info
         
-        # 检查是否需要压缩聊天历史：超过5轮 或 上下文超过3K
         context_length = calculate_context_length(messages)
         if chat_rounds > 5 or context_length > 3000:
             messages = compress_chat_history(env_vars, messages)
-            # 压缩后重置轮数，避免立即再次压缩
             chat_rounds = len(messages)
 
-        while True:
+        # 最多允许2次工具调用，彻底防止死循环
+        tool_call_count = 0
+        while tool_call_count < 2:
             is_tool_round = any(msg.get("tool_calls") for msg in messages[-2:])
             content, tool_calls, total, duration, speed = call_llm_stream(env_vars, messages, user_info, is_tool_round)
 
@@ -571,13 +628,28 @@ def main():
                 break
 
             if tool_calls:
+                tool_call_count += 1
+                print(f"\n检测到工具调用（第{tool_call_count}次）：{[tc['function']['name'] for tc in tool_calls]}")
+                
                 for tc in tool_calls:
                     tool_name = tc["function"]["name"]
+                    
+                    # 🔴 核心：强制拦截错误的工具调用
+                    doc_keywords = ["文档", "仓库", "空间", "知识库", "向量库", "AnythingLLM"]
+                    if any(keyword in prompt for keyword in doc_keywords) and tool_name != "anythingllm_query":
+                        print(f"⚠️ 自动拦截错误工具调用：{tool_name}，强制切换为anythingllm_query")
+                        tc["function"]["name"] = "anythingllm_query"
+                        tc["function"]["arguments"] = json.dumps({"message": prompt}, ensure_ascii=False)
+                        tool_name = "anythingllm_query"
+                    
                     try:
                         params = json.loads(tc["function"]["arguments"])
+                        print(f"工具参数：{params}")
                     except:
                         params = {}
+                        print("参数解析失败，使用空参数")
                     
+                    # 执行工具
                     if tool_name == "list_files":
                         res = list_files(params.get("directory"))
                     elif tool_name == "rename_file":
@@ -595,6 +667,7 @@ def main():
                     else:
                         res = json.dumps({"success": False, "error": "未知工具"}, ensure_ascii=False)
                     
+                    # 添加工具调用记录和结果到上下文
                     messages.append({
                         "role": "assistant",
                         "tool_calls": [tc]
@@ -606,9 +679,10 @@ def main():
                         "content": res
                     })
 
+                # 工具执行完，继续循环让LLM生成最终回答
                 continue
 
-            # 每轮都保存日志
+            # 无工具调用时，正常输出、保存日志
             save_log(prompt, content, user_info)
             
             messages.append({"role": "assistant", "content": content})
@@ -616,6 +690,11 @@ def main():
             print("=" * 50)
             print(f"⏱ 耗时：{duration:.2f}s  |  📊 Tokens：{total}  |  ⚡ 速度：{speed:.2f} token/s")
             print("=" * 50)
+            break
+        
+        # 工具调用次数超限提示
+        if tool_call_count >= 2:
+            print("\n⚠️ 工具调用次数已达上限，本次查询结束")
             break
 
 if __name__ == "__main__":
