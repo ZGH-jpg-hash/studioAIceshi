@@ -19,6 +19,19 @@ def load_env():
             if line and not line.startswith('#'):
                 key, value = line.split('=', 1)
                 env_vars[key.strip()] = value.strip()
+    
+    # 增加关键配置检查
+    required_vars = ['BASE_URL', 'MODEL', 'API_KEY', 'ANYTHINGLLM_API_KEY']
+    missing = [var for var in required_vars if var not in env_vars]
+    if missing:
+        print(f"❌ 错误: .env 文件缺少以下必填配置：{', '.join(missing)}")
+        return None
+    
+    if 'ANYTHINGLLM_WORKSPACE' not in env_vars:
+        print("⚠️  警告: 未配置ANYTHINGLLM_WORKSPACE，将使用默认值'default'")
+        print("   请在.env中添加：ANYTHINGLLM_WORKSPACE=你的工作区slug")
+        print("   工作区slug可在AnythingLLM地址栏查看，例如 http://127.0.0.1:3001/w/ai 中的'ai'")
+    
     return env_vars
 
 # ====================== 工具函数 ======================
@@ -103,11 +116,14 @@ def curl_request(url):
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
-# ====================== 【最终curl版】anythingllm_query 函数 ======================
+# ====================== 【修复版】anythingllm_query 函数 ======================
 def anythingllm_query(message):
     try:
         print(f"\n=== [AnythingLLM 工具调用开始] ===")
         env_vars = load_env()
+        if not env_vars:
+            return json.dumps({"success": False, "result": "错误：未加载.env配置文件"}, ensure_ascii=False)
+            
         api_key = env_vars.get('ANYTHINGLLM_API_KEY', '')
         workspace_slug = env_vars.get('ANYTHINGLLM_WORKSPACE', 'default')
         
@@ -115,7 +131,7 @@ def anythingllm_query(message):
             print("❌ API Key未设置")
             return json.dumps({"success": False, "result": "错误：未配置AnythingLLM API密钥"}, ensure_ascii=False)
         
-        # 用127.0.0.1代替localhost，避免Windows解析延迟
+        # 修复：使用正确的工作区slug构建URL
         url = f"http://127.0.0.1:3001/api/v1/workspace/{workspace_slug}/chat"
         print(f"请求URL：{url}")
         print(f"查询内容：{message}")
@@ -135,28 +151,26 @@ def anythingllm_query(message):
         print(f"请求数据：{data}")
         
         print("执行curl命令...")
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as f:
-            f.write(data)
-            temp_json_path = f.name
+        # 🔴 核心修复：去掉临时文件，直接传递JSON数据；延长超时；增加详细日志
+        result = subprocess.run([
+            'curl', '-s', '-v', '-X', 'POST',
+            '--connect-timeout', '15',  # 连接超时15秒
+            '--max-time', '180',        # 总超时180秒
+            '-H', headers[0],
+            '-H', headers[1],
+            '-d', data,  # 直接传递JSON字符串，避免临时文件问题
+            url
+        ], capture_output=True, timeout=185)  # Python侧超时比curl多5秒
         
-        try:
-            # 🔴 核心修改：延长超时到120秒，增加连接超时10秒
-            result = subprocess.run([
-                'curl', '-s', '-X', 'POST',
-                '--connect-timeout', '10',  # 连接超时10秒
-                '--max-time', '120',        # 总超时120秒
-                '-H', headers[0],
-                '-H', headers[1],
-                '-d', f'@{temp_json_path}',
-                url
-            ], capture_output=True, timeout=125)  # Python侧超时比curl多5秒
-            print(f"curl命令执行完成，返回码：{result.returncode}")
-        finally:
+        print(f"curl命令执行完成，返回码：{result.returncode}")
+        
+        # 打印完整错误信息（关键修复）
+        if result.stderr:
             try:
-                os.unlink(temp_json_path)
-            except:
-                pass
+                stderr = result.stderr.decode('utf-8')
+            except UnicodeDecodeError:
+                stderr = result.stderr.decode('gbk', errors='replace')
+            print(f"curl详细日志：{stderr}")
         
         if result.returncode == 0:
             try:
@@ -176,17 +190,18 @@ def anythingllm_query(message):
                     error = resp_json["error"]
                     print(f"❌ 接口报错：{error}")
                     return json.dumps({"success": False, "result": f"文档仓库查询失败：{error}"}, ensure_ascii=False)
-            except:
-                pass
-
-            return json.dumps({"success": True, "result": content}, ensure_ascii=False)
+                else:
+                    print(f"⚠️  接口返回格式异常：{resp_json}")
+                    return json.dumps({"success": False, "result": f"接口返回格式异常：{resp_json}"}, ensure_ascii=False)
+            except json.JSONDecodeError as e:
+                print(f"❌ JSON解析失败：{str(e)}")
+                return json.dumps({"success": False, "result": f"响应解析失败：{str(e)}"}, ensure_ascii=False)
         else:
-            try:
-                error = result.stderr.decode('utf-8')
-            except UnicodeDecodeError:
-                error = result.stderr.decode('gbk', errors='replace')
-            print(f"curl命令错误信息：{error}")
-            return json.dumps({"success": False, "result": f"请求失败：{error}"}, ensure_ascii=False)
+            error_msg = f"curl请求失败，返回码：{result.returncode}"
+            if result.stderr:
+                error_msg += f"\n详细错误：{stderr}"
+            print(f"❌ {error_msg}")
+            return json.dumps({"success": False, "result": error_msg}, ensure_ascii=False)
             
     except Exception as e:
         error_msg = str(e)
@@ -343,7 +358,7 @@ TOOLS = [
     }
 ]
 
-# ====================== 【强制工具优先级】系统提示词 ======================
+# ====================== 系统提示词 ======================
 def build_system_prompt(user_info):
     return f"""【最高优先级规则，违反任何一条都视为错误】
 1.  绝对禁止提及"通义千问"、"阿里巴巴"、"我是AI助手"
@@ -371,8 +386,8 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
     host = url.netloc
     path = "/v1/chat/completions"
 
-    # 通义千问专属：用user角色发送系统提示
-    system_msg = {"role": "user", "content": build_system_prompt(user_info)}
+    # 通义千问兼容：使用system角色发送系统提示
+    system_msg = {"role": "system", "content": build_system_prompt(user_info)}
     final_messages = [system_msg] + messages
 
     data = {
@@ -390,7 +405,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
         "Authorization": f"Bearer {env_vars.get('API_KEY', '')}"
     }
 
-    timeout = int(env_vars.get('TIMEOUT', '120'))
+    timeout = int(env_vars.get('TIMEOUT', '180'))
     if url.scheme == 'https':
         conn = http.client.HTTPSConnection(host, timeout=timeout)
     else:
@@ -479,7 +494,7 @@ def call_llm_non_stream(env_vars, messages):
         "Authorization": f"Bearer {env_vars.get('API_KEY', '')}"
     }
 
-    timeout = int(env_vars.get('TIMEOUT', '120'))
+    timeout = int(env_vars.get('TIMEOUT', '180'))
     if url.scheme == 'https':
         conn = http.client.HTTPSConnection(host, timeout=timeout)
     else:
@@ -587,7 +602,7 @@ def save_log(user_question, ai_answer, user_info):
         f.write(f"用户：{user_question}\n")
         f.write(f"AI：{ai_answer}\n")
 
-# ====================== 主循环（修复死循环+强制工具拦截） ======================
+# ====================== 主循环（修复工具调用后逻辑） ======================
 def main():
     env_vars = load_env()
     if not env_vars: return
@@ -620,21 +635,26 @@ def main():
 
         # 最多允许2次工具调用，彻底防止死循环
         tool_call_count = 0
+        has_tool_result = False
+        final_answer = ""
+        
         while tool_call_count < 2:
-            is_tool_round = any(msg.get("tool_calls") for msg in messages[-2:])
+            is_tool_round = has_tool_result
             content, tool_calls, total, duration, speed = call_llm_stream(env_vars, messages, user_info, is_tool_round)
 
             if not content and not tool_calls:
+                print("\n❌ AI未返回任何内容")
                 break
 
             if tool_calls:
                 tool_call_count += 1
+                has_tool_result = True
                 print(f"\n检测到工具调用（第{tool_call_count}次）：{[tc['function']['name'] for tc in tool_calls]}")
                 
                 for tc in tool_calls:
                     tool_name = tc["function"]["name"]
                     
-                    # 🔴 核心：强制拦截错误的工具调用
+                    # 强制拦截错误的工具调用
                     doc_keywords = ["文档", "仓库", "空间", "知识库", "向量库", "AnythingLLM"]
                     if any(keyword in prompt for keyword in doc_keywords) and tool_name != "anythingllm_query":
                         print(f"⚠️ 自动拦截错误工具调用：{tool_name}，强制切换为anythingllm_query")
@@ -682,20 +702,20 @@ def main():
                 # 工具执行完，继续循环让LLM生成最终回答
                 continue
 
-            # 无工具调用时，正常输出、保存日志
-            save_log(prompt, content, user_info)
-            
-            messages.append({"role": "assistant", "content": content})
+            # 无工具调用时，保存最终回答
+            final_answer = content
+            break
+        
+        # 输出最终回答并保存日志
+        if final_answer:
+            save_log(prompt, final_answer, user_info)
+            messages.append({"role": "assistant", "content": final_answer})
             
             print("=" * 50)
             print(f"⏱ 耗时：{duration:.2f}s  |  📊 Tokens：{total}  |  ⚡ 速度：{speed:.2f} token/s")
             print("=" * 50)
-            break
-        
-        # 工具调用次数超限提示
-        if tool_call_count >= 2:
+        elif tool_call_count >= 2:
             print("\n⚠️ 工具调用次数已达上限，本次查询结束")
-            break
 
 if __name__ == "__main__":
     main()
