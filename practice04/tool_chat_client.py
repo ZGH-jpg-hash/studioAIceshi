@@ -116,7 +116,7 @@ def curl_request(url):
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
-# ====================== 【修复版】anythingllm_query 函数 ======================
+# ====================== 【最终修复版】anythingllm_query 函数 ======================
 def anythingllm_query(message):
     try:
         print(f"\n=== [AnythingLLM 工具调用开始] ===")
@@ -131,7 +131,6 @@ def anythingllm_query(message):
             print("❌ API Key未设置")
             return json.dumps({"success": False, "result": "错误：未配置AnythingLLM API密钥"}, ensure_ascii=False)
         
-        # 修复：使用正确的工作区slug构建URL
         url = f"http://127.0.0.1:3001/api/v1/workspace/{workspace_slug}/chat"
         print(f"请求URL：{url}")
         print(f"查询内容：{message}")
@@ -148,60 +147,46 @@ def anythingllm_query(message):
             "includeSources": False
         }
         data = json.dumps(post_data, ensure_ascii=False)
-        print(f"请求数据：{data}")
         
         print("执行curl命令...")
-        # 🔴 核心修复：去掉临时文件，直接传递JSON数据；延长超时；增加详细日志
         result = subprocess.run([
-            'curl', '-s', '-v', '-X', 'POST',
-            '--connect-timeout', '15',  # 连接超时15秒
-            '--max-time', '180',        # 总超时180秒
+            'curl', '-s', '-X', 'POST',
+            '--connect-timeout', '15',
+            '--max-time', '180',
             '-H', headers[0],
             '-H', headers[1],
-            '-d', data,  # 直接传递JSON字符串，避免临时文件问题
+            '-d', data,
             url
-        ], capture_output=True, timeout=185)  # Python侧超时比curl多5秒
+        ], capture_output=True, timeout=185)
         
         print(f"curl命令执行完成，返回码：{result.returncode}")
-        
-        # 打印完整错误信息（关键修复）
-        if result.stderr:
-            try:
-                stderr = result.stderr.decode('utf-8')
-            except UnicodeDecodeError:
-                stderr = result.stderr.decode('gbk', errors='replace')
-            print(f"curl详细日志：{stderr}")
         
         if result.returncode == 0:
             try:
                 content = result.stdout.decode('utf-8')
-                print(f"curl命令返回内容：{content}")
             except UnicodeDecodeError:
                 content = result.stdout.decode('gbk', errors='replace')
-                print(f"curl命令返回内容（gbk）：{content}")
             
             try:
                 resp_json = json.loads(content)
                 if "textResponse" in resp_json and resp_json["textResponse"]:
                     result_text = resp_json["textResponse"]
-                    print(f"✅ 提取到回答：{result_text}")
+                    print(f"✅ 提取到回答：\n{result_text}")
                     return json.dumps({"success": True, "result": result_text}, ensure_ascii=False)
                 elif "error" in resp_json:
                     error = resp_json["error"]
                     print(f"❌ 接口报错：{error}")
                     return json.dumps({"success": False, "result": f"文档仓库查询失败：{error}"}, ensure_ascii=False)
-                else:
-                    print(f"⚠️  接口返回格式异常：{resp_json}")
-                    return json.dumps({"success": False, "result": f"接口返回格式异常：{resp_json}"}, ensure_ascii=False)
             except json.JSONDecodeError as e:
                 print(f"❌ JSON解析失败：{str(e)}")
                 return json.dumps({"success": False, "result": f"响应解析失败：{str(e)}"}, ensure_ascii=False)
         else:
-            error_msg = f"curl请求失败，返回码：{result.returncode}"
-            if result.stderr:
-                error_msg += f"\n详细错误：{stderr}"
-            print(f"❌ {error_msg}")
-            return json.dumps({"success": False, "result": error_msg}, ensure_ascii=False)
+            try:
+                error = result.stderr.decode('utf-8')
+            except UnicodeDecodeError:
+                error = result.stderr.decode('gbk', errors='replace')
+            print(f"❌ curl错误：{error}")
+            return json.dumps({"success": False, "result": f"请求失败：{error}"}, ensure_ascii=False)
             
     except Exception as e:
         error_msg = str(e)
@@ -358,43 +343,44 @@ TOOLS = [
     }
 ]
 
-# ====================== 系统提示词 ======================
+# ====================== 系统提示词（LMStudio兼容版） ======================
 def build_system_prompt(user_info):
-    return f"""【最高优先级规则，违反任何一条都视为错误】
+    return f"""【最高优先级规则】
 1.  绝对禁止提及"通义千问"、"阿里巴巴"、"我是AI助手"
-2.  必须100%记住：用户叫{user_info}
+2.  用户叫{user_info}
 3.  回答必须完全贴合用户问题，不能答非所问
 4.  不能在回复中提及任何工具相关内容、接口、代码、日志底层信息
 5.  用户问"我是谁"时，必须回答"你是{user_info}"
-6.  用户问"你是谁"时，回答要友好自然，不要重复用户的问题
-7.  保持回答简洁准确
+6.  用户问"你是谁"时，回答要友好自然
 
-【🔴 工具调用绝对规则，必须严格遵守，优先级高于一切】
-8.  只要用户问题中包含以下任何一个词：
-    文档仓库、文件仓库、仓库、文档空间、知识库、向量库、AnythingLLM、ai文档、ai空间
-    **必须且只能使用anythingllm_query工具查询，绝对禁止使用list_files/read_file/rename_file等任何本地文件工具**
-9.  只有当用户明确提到"本地文件"、"电脑文件夹"、"D盘"、"C盘"、"本地磁盘"等本地存储相关词汇时，才能使用list_files等本地文件工具
-10. 工具返回结果后，你直接把result字段的内容整理成通顺的中文回复用户即可；
-    若工具返回失败，直接把result字段的错误信息告诉用户，不要返回原始json代码。
+【🔴 工具调用规则】
+7.  只要用户问题中包含：文档仓库、文件仓库、仓库、文档空间、知识库、向量库、AnythingLLM、ai文档
+    **必须且只能使用anythingllm_query工具查询**，绝对禁止使用任何本地文件工具
+8.  只有当用户明确提到"本地文件"、"电脑文件夹"、"D盘"、"C盘"时，才能使用本地文件工具
+9.  工具返回结果后，你**必须**直接把result字段的内容整理成通顺的中文回复用户
+10. 若工具返回失败，直接把result字段的错误信息告诉用户
 
-现在回答用户的问题："""
+【⚠️ 重要：LMStudio兼容说明】
+- 当你看到工具返回的结果时，**必须立即生成回答**，不要再次调用工具
+- 不要忽略工具返回的内容，必须基于工具结果进行回复
+"""
 
-# ====================== 流式调用 ======================
-def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
+# ====================== 流式调用（修复LMStudio兼容问题） ======================
+def call_llm_stream(env_vars, messages, user_info, is_tool_result=False):
     start_time = time.time()
     url = urlparse(env_vars['BASE_URL'])
     host = url.netloc
     path = "/v1/chat/completions"
 
-    # 通义千问兼容：使用system角色发送系统提示
+    # LMStudio兼容：使用system角色发送系统提示
     system_msg = {"role": "system", "content": build_system_prompt(user_info)}
     final_messages = [system_msg] + messages
 
     data = {
         "model": env_vars["MODEL"],
         "messages": final_messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
+        "tools": TOOLS if not is_tool_result else None,  # 工具结果后不再提供工具选项
+        "tool_choice": "auto" if not is_tool_result else "none",  # 强制不调用工具
         "temperature": 0.1,
         "max_tokens": int(env_vars.get("MAX_TOKENS", 2048)),
         "stream": True
@@ -418,8 +404,10 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
         conn.request("POST", path, json.dumps(data), headers)
         response = conn.getresponse()
 
-        if not is_tool_round:
+        if not is_tool_result:
             print("AI 正在思考...", end="", flush=True)
+        else:
+            print("AI 正在整理回答...", end="", flush=True)
 
         for line in response.fp:
             line = line.decode("utf-8").strip()
@@ -431,7 +419,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
                     jd = json.loads(data_part)
                     delta = jd["choices"][0]["delta"]
                     
-                    if not is_tool_round and "content" in delta and delta["content"]:
+                    if "content" in delta and delta["content"]:
                         token = delta["content"]
                         full_content += token
                         if not tool_calls:
@@ -440,7 +428,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
                                 print("AI 回复：", end="", flush=True)
                             print(token, end="", flush=True)
                     
-                    if "tool_calls" in delta and delta["tool_calls"]:
+                    if not is_tool_result and "tool_calls" in delta and delta["tool_calls"]:
                         for tc in delta["tool_calls"]:
                             index = tc["index"]
                             if index >= len(tool_calls):
@@ -460,8 +448,7 @@ def call_llm_stream(env_vars, messages, user_info, is_tool_round=False):
                 except:
                     continue
 
-        if not is_tool_round:
-            print("\n")
+        print("\n")
     except Exception as e:
         print(f"\n❌ 连接失败：{str(e)}")
         return None, None, 0, 0, 0
@@ -602,7 +589,7 @@ def save_log(user_question, ai_answer, user_info):
         f.write(f"用户：{user_question}\n")
         f.write(f"AI：{ai_answer}\n")
 
-# ====================== 主循环（修复工具调用后逻辑） ======================
+# ====================== 主循环（终极修复LMStudio工具调用问题） ======================
 def main():
     env_vars = load_env()
     if not env_vars: return
@@ -633,89 +620,94 @@ def main():
             messages = compress_chat_history(env_vars, messages)
             chat_rounds = len(messages)
 
-        # 最多允许2次工具调用，彻底防止死循环
-        tool_call_count = 0
-        has_tool_result = False
-        final_answer = ""
-        
-        while tool_call_count < 2:
-            is_tool_round = has_tool_result
-            content, tool_calls, total, duration, speed = call_llm_stream(env_vars, messages, user_info, is_tool_round)
+        # 第一步：调用LLM判断是否需要工具
+        content, tool_calls, total, duration, speed = call_llm_stream(env_vars, messages, user_info, False)
 
-            if not content and not tool_calls:
-                print("\n❌ AI未返回任何内容")
-                break
-
-            if tool_calls:
-                tool_call_count += 1
-                has_tool_result = True
-                print(f"\n检测到工具调用（第{tool_call_count}次）：{[tc['function']['name'] for tc in tool_calls]}")
+        # 如果有工具调用
+        if tool_calls:
+            print(f"\n检测到工具调用：{[tc['function']['name'] for tc in tool_calls]}")
+            
+            for tc in tool_calls:
+                tool_name = tc["function"]["name"]
                 
-                for tc in tool_calls:
-                    tool_name = tc["function"]["name"]
-                    
-                    # 强制拦截错误的工具调用
-                    doc_keywords = ["文档", "仓库", "空间", "知识库", "向量库", "AnythingLLM"]
-                    if any(keyword in prompt for keyword in doc_keywords) and tool_name != "anythingllm_query":
-                        print(f"⚠️ 自动拦截错误工具调用：{tool_name}，强制切换为anythingllm_query")
-                        tc["function"]["name"] = "anythingllm_query"
-                        tc["function"]["arguments"] = json.dumps({"message": prompt}, ensure_ascii=False)
-                        tool_name = "anythingllm_query"
-                    
-                    try:
-                        params = json.loads(tc["function"]["arguments"])
-                        print(f"工具参数：{params}")
-                    except:
-                        params = {}
-                        print("参数解析失败，使用空参数")
-                    
-                    # 执行工具
-                    if tool_name == "list_files":
-                        res = list_files(params.get("directory"))
-                    elif tool_name == "rename_file":
-                        res = rename_file(params.get("directory"), params.get("old_name"), params.get("new_name"))
-                    elif tool_name == "delete_file":
-                        res = delete_file(params.get("directory"), params.get("file_name"))
-                    elif tool_name == "create_file":
-                        res = create_file(params.get("directory"), params.get("file_name"), params.get("content", ""))
-                    elif tool_name == "read_file":
-                        res = read_file(params.get("directory"), params.get("file_name"))
-                    elif tool_name == "curl_request":
-                        res = curl_request(params.get("url"))
-                    elif tool_name == "anythingllm_query":
-                        res = anythingllm_query(params.get("message"))
-                    else:
-                        res = json.dumps({"success": False, "error": "未知工具"}, ensure_ascii=False)
-                    
-                    # 添加工具调用记录和结果到上下文
-                    messages.append({
-                        "role": "assistant",
-                        "tool_calls": [tc]
-                    })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "name": tool_name,
-                        "content": res
-                    })
+                # 强制拦截错误的工具调用
+                doc_keywords = ["文档", "仓库", "空间", "知识库", "向量库", "AnythingLLM"]
+                if any(keyword in prompt for keyword in doc_keywords) and tool_name != "anythingllm_query":
+                    print(f"⚠️ 自动拦截错误工具调用：{tool_name}，强制切换为anythingllm_query")
+                    tc["function"]["name"] = "anythingllm_query"
+                    tc["function"]["arguments"] = json.dumps({"message": prompt}, ensure_ascii=False)
+                    tool_name = "anythingllm_query"
+                
+                try:
+                    params = json.loads(tc["function"]["arguments"])
+                    print(f"工具参数：{params}")
+                except:
+                    params = {}
+                    print("参数解析失败，使用空参数")
+                
+                # 执行工具
+                if tool_name == "list_files":
+                    res = list_files(params.get("directory"))
+                elif tool_name == "rename_file":
+                    res = rename_file(params.get("directory"), params.get("old_name"), params.get("new_name"))
+                elif tool_name == "delete_file":
+                    res = delete_file(params.get("directory"), params.get("file_name"))
+                elif tool_name == "create_file":
+                    res = create_file(params.get("directory"), params.get("file_name"), params.get("content", ""))
+                elif tool_name == "read_file":
+                    res = read_file(params.get("directory"), params.get("file_name"))
+                elif tool_name == "curl_request":
+                    res = curl_request(params.get("url"))
+                elif tool_name == "anythingllm_query":
+                    res = anythingllm_query(params.get("message"))
+                else:
+                    res = json.dumps({"success": False, "error": "未知工具"}, ensure_ascii=False)
+                
+                # 添加工具调用记录和结果到上下文
+                messages.append({
+                    "role": "assistant",
+                    "tool_calls": [tc]
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": tool_name,
+                    "content": res
+                })
 
-                # 工具执行完，继续循环让LLM生成最终回答
-                continue
+            # 🔴 核心修复：工具执行完后，强制调用LLM生成最终回答
+            # 不再提供工具选项，强制模型基于工具结果生成回答
+            content, _, total, duration, speed = call_llm_stream(env_vars, messages, user_info, True)
 
-            # 无工具调用时，保存最终回答
-            final_answer = content
-            break
-        
-        # 输出最终回答并保存日志
-        if final_answer:
-            save_log(prompt, final_answer, user_info)
-            messages.append({"role": "assistant", "content": final_answer})
+        # 输出最终回答
+        if content:
+            save_log(prompt, content, user_info)
+            messages.append({"role": "assistant", "content": content})
             
             print("=" * 50)
             print(f"⏱ 耗时：{duration:.2f}s  |  📊 Tokens：{total}  |  ⚡ 速度：{speed:.2f} token/s")
             print("=" * 50)
-        elif tool_call_count >= 2:
-            print("\n⚠️ 工具调用次数已达上限，本次查询结束")
+        else:
+            # 🔴 终极兜底：如果LLM还是没有生成回答，直接提取工具结果输出
+            print("\n⚠️  模型未生成回答，直接显示工具结果：")
+            print("-" * 50)
+            # 找到最后一个工具结果
+            for msg in reversed(messages):
+                if msg["role"] == "tool":
+                    try:
+                        tool_result = json.loads(msg["content"])
+                        if tool_result.get("success") and "result" in tool_result:
+                            print(tool_result["result"])
+                            # 保存工具结果作为回答
+                            save_log(prompt, tool_result["result"], user_info)
+                            messages.append({"role": "assistant", "content": tool_result["result"]})
+                            break
+                    except:
+                        print(msg["content"])
+                        save_log(prompt, msg["content"], user_info)
+                        messages.append({"role": "assistant", "content": msg["content"]})
+                        break
+            print("-" * 50)
 
 if __name__ == "__main__":
     main()
