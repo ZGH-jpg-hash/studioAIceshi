@@ -72,6 +72,9 @@ python practice03/tool_chat_client.py
 
 # 运行集成AnythingLLM的工具助手
 python practice04/tool_chat_client.py
+
+# 运行支持Skills的工具助手
+python practice05/tool_chat_client.py
 ```
 
 ## 项目结构
@@ -87,6 +90,14 @@ studioAIceshi/
 │   └── tool_chat_client_v2.py # 增强版本工具助手
 ├── practice04/         # 集成AnythingLLM的工具调用聊天客户端
 │   ├── tool_chat_client.py   # 集成AnythingLLM的工具助手
+├── practice05/         # 支持Skills的工具调用聊天客户端
+│   ├── tool_chat_client.py   # 支持Skills的工具助手
+│   ├── test_skills.py        # Skills功能测试脚本
+│   └── test_notice_skill.py  # Notice技能测试脚本
+├── .agents/            # Skills技能目录
+│   └── skills/        # 技能文件存放目录
+│       └── notice/     # 通知撰写技能
+│           └── SKILL.md    # 技能定义文件
 ├── venv/              # 虚拟环境
 ├── requirements.txt   # 项目依赖
 ├── env.example        # 环境变量配置模板（可重命名为.env）
@@ -169,6 +180,74 @@ studioAIceshi/
    ANYTHINGLLM_API_KEY=your-anythingllm-api-key
    ```
 
+### 5. Skills功能
+`practice05/tool_chat_client.py` 实现了Skills技能系统：
+
+#### 功能特性
+- **技能列表读取**：`list_available_skills()` 自动读取 `.agents/skills` 目录下的所有技能
+- **技能内容加载**：`load_skill_content(skill_name)` 加载指定技能的详细说明
+- **智能技能匹配**：LLM根据用户请求自动判断需要使用的技能
+- **YAML Front Matter解析**：自动解析SKILL.md文件中的元数据（name、description）
+- **System Prompt集成**：技能列表自动注入到系统提示词中
+
+#### Skills目录结构
+```
+.agents/skills/
+├── notice/
+│   └── SKILL.md
+└── [其他技能]/
+    └── SKILL.md
+```
+
+#### SKILL.md文件格式
+```markdown
+---
+name: skill_name
+description: 技能描述
+---
+
+# 技能标题
+
+## 使用场景
+描述何时使用此技能
+
+## 核心规则
+列出技能的核心规则和要求
+
+## 示例
+提供使用示例
+
+## 执行步骤
+列出执行步骤
+```
+
+#### 内置技能：Notice（通知撰写）
+- **功能**：撰写、修改、润色各类通知
+- **核心规则**：
+  - 通知标题不能以"通知"二字开头
+  - 必须使用"XX部通知"格式（如"销售部通知"、"XX部通知"）
+  - 根据用户提供的部门信息自动调整标题前缀
+- **测试方法**：
+  ```bash
+  # 测试Skills功能
+  python practice05/test_skills.py
+  
+  # 测试Notice技能
+  python practice05/test_notice_skill.py
+  ```
+- **交互测试**：
+  ```bash
+  python practice05/tool_chat_client.py
+  
+  # 测试场景1：无部门信息
+  你：帮我写一个五一节放假的通知
+  # 预期输出：以"XX部通知"开头
+  
+  # 测试场景2：有部门信息
+  你：我是销售部的，帮我写一个五一节放假的通知
+  # 预期输出：以"销售部通知"开头
+  ```
+
 ## 依赖说明
 - **numpy/pandas**：数据处理基础库
 - **openai**：OpenAI API客户端
@@ -217,6 +296,19 @@ studioAIceshi/
 - 验证文件/网络操作的权限是否充足
 
 ### 聊天历史查找失败
-- 检查D:\chat-log\log.txt文件是否存在
+- 检查D:\\chat-log\\log.txt文件是否存在
 - 确认文件是否有读取权限
 - 验证/search指令格式是否正确
+
+### Skills功能不工作
+- 检查 `.agents/skills` 目录是否存在
+- 确保每个技能目录下都有 `SKILL.md` 文件
+- 验证 `SKILL.md` 文件格式是否正确（包含YAML front matter）
+- 检查技能的 `name` 和 `description` 字段是否正确填写
+- 确保LLM模型支持function call功能
+
+### Notice技能测试失败
+- 确认 `.agents/skills/notice/SKILL.md` 文件存在
+- 检查文件内容格式是否符合要求
+- 运行测试脚本验证功能：`python practice05/test_skills.py`
+- 查看测试脚本输出，确认技能加载成功
